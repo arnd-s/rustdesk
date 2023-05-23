@@ -1,3 +1,5 @@
+name: Build all Once
+
 on:
  workflow_dispatch:
 
