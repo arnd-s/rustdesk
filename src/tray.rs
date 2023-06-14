@@ -1,31 +1,22 @@
-/// Start a tray icon in Linux
-///
-/// [Block]
-/// This function will block current execution, show the tray icon and handle events.
-#[cfg(target_os = "linux")]
-pub fn start_tray() {}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn start_tray() {
     use hbb_common::{allow_err, log};
     allow_err!(make_tray());
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn make_tray() -> hbb_common::ResultType<()> {
     // https://github.com/tauri-apps/tray-icon/blob/dev/examples/tao.rs
     use hbb_common::anyhow::Context;
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tray_icon::{
         menu::{Menu, MenuEvent, MenuItem},
-        ClickEvent, TrayEvent, TrayIconBuilder,
+        TrayEvent, TrayIconBuilder,
     };
     let icon;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let mode = dark_light::detect();
-        const LIGHT: &[u8] = include_bytes!("../res/mac-tray-light-x2.png");
-        const DARK: &[u8] = include_bytes!("../res/mac-tray-dark-x2.png");
+        const LIGHT: &[u8] = include_bytes!("../res/outlined-tray-light-x2.png");
+        const DARK: &[u8] = include_bytes!("../res/outlined-tray-dark-x2.png");
         icon = match mode {
             dark_light::Mode::Dark => LIGHT,
             _ => DARK,
@@ -83,6 +74,15 @@ pub fn make_tray() -> hbb_common::ResultType<()> {
                 .spawn()
                 .ok();
         }
+        // xdg-open?
+        #[cfg(target_os = "linux")]
+        if !std::process::Command::new("xdg-open")
+            .arg("rustdesk://")
+            .spawn()
+            .is_ok()
+        {
+            crate::run_me::<&str>(vec![]).ok();
+        }
     };
 
     event_loop.run(move |_event, _, control_flow| {
@@ -97,18 +97,19 @@ pub fn make_tray() -> hbb_common::ResultType<()> {
 
         if let Ok(event) = menu_channel.try_recv() {
             if event.id == quit_i.id() {
-                #[cfg(target_os = "macos")]
-                crate::platform::macos::uninstall(false);
-                #[cfg(any(target_os = "linux", target_os = "windows"))]
-                crate::platform::uninstall_service(false).ok();
+                if !crate::check_process("--server", false) {
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
+                crate::platform::uninstall_service(false);
             } else if event.id == open_i.id() {
                 open_func();
             }
         }
 
-        if let Ok(event) = tray_channel.try_recv() {
+        if let Ok(_event) = tray_channel.try_recv() {
             #[cfg(target_os = "windows")]
-            if event.event == ClickEvent::Left {
+            if _event.event == tray_icon::ClickEvent::Left {
                 open_func();
             }
         }

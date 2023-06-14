@@ -3,6 +3,7 @@ use desktop::Desktop;
 pub use hbb_common::platform::linux::*;
 use hbb_common::{
     allow_err, bail,
+    config::Config,
     libc::{c_char, c_int, c_long, c_void},
     log,
     message_proto::Resolution,
@@ -10,6 +11,7 @@ use hbb_common::{
 };
 use std::{
     cell::RefCell,
+    io::Write,
     path::{Path, PathBuf},
     process::{Child, Command},
     string::String,
@@ -306,9 +308,14 @@ fn force_stop_server() {
 }
 
 pub fn start_os_service() {
+    check_if_stop_service();
     stop_rustdesk_servers();
     stop_subprocess();
     start_uinput_service();
+
+    std::thread::spawn(|| {
+        allow_err!(crate::ipc::start(crate::POSTFIX_SERVICE));
+    });
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -1074,4 +1081,114 @@ impl WakeLock {
                 .ok(),
         )
     }
+}
+
+fn has_cmd(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .status()
+        .map(|x| x.success())
+        .unwrap_or_default()
+}
+
+pub fn run_cmds_pkexec(cmds: &str) -> bool {
+    const DONE: &str = "RUN_CMDS_PKEXEC_DONE";
+    if let Ok(output) = std::process::Command::new("pkexec")
+        .arg("sh")
+        .arg("-c")
+        .arg(&format!("{cmds} echo {DONE}"))
+        .output()
+    {
+        let out = String::from_utf8_lossy(&output.stdout);
+        log::debug!("cmds: {cmds}");
+        log::debug!("output: {out}");
+        out.contains(DONE)
+    } else {
+        false
+    }
+}
+
+pub fn run_me_with(secs: u32) {
+    let exe = std::env::current_exe()
+        .unwrap_or("".into())
+        .to_string_lossy()
+        .to_string();
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&format!("sleep {secs}; {exe}"))
+        .spawn()
+        .ok();
+}
+
+fn switch_service(stop: bool) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    Config::set_option("stop-service".into(), if stop { "Y" } else { "" }.into());
+    if home != "/root" && !Config::get().is_empty() {
+        format!("cp -f {home}/.config/rustdesk/RustDesk.toml /root/.config/rustdesk/; cp -f {home}/.config/rustdesk/RustDesk2.toml /root/.config/rustdesk/;")
+    } else {
+        "".to_owned()
+    }
+}
+
+pub fn uninstall_service(show_new_window: bool) -> bool {
+    if !has_cmd("systemctl") {
+        return false;
+    }
+    log::info!("Uninstalling service...");
+    let cp = switch_service(true);
+    if !run_cmds_pkexec(&format!(
+        "systemctl disable rustdesk; systemctl stop rustdesk; {cp}"
+    )) {
+        Config::set_option("stop-service".into(), "".into());
+        return true;
+    }
+    if show_new_window {
+        run_me_with(2);
+    }
+    std::process::exit(0);
+}
+
+pub fn install_service() -> bool {
+    if !has_cmd("systemctl") {
+        return false;
+    }
+    log::info!("Installing service...");
+    let cp = switch_service(false);
+    if !run_cmds_pkexec(&format!(
+        "{cp} systemctl enable rustdesk; systemctl start rustdesk;"
+    )) {
+        Config::set_option("stop-service".into(), "Y".into());
+        return true;
+    }
+    run_me_with(2);
+    std::process::exit(0);
+}
+
+fn check_if_stop_service() {
+    if Config::get_option("stop-service".into()) == "Y" {
+        allow_err!(run_cmds(
+            "systemctl disable rustdesk; systemctl stop rustdesk"
+        ));
+    }
+}
+
+pub fn check_autostart_config() -> ResultType<()> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{home}/.config/autostart");
+    let file = format!("{path}/rustdesk.desktop");
+    std::fs::create_dir_all(&path).ok();
+    if !Path::new(&file).exists() {
+        // write text to the desktop file
+        let mut file = std::fs::File::create(&file)?;
+        file.write_all(
+            "
+[Desktop Entry]
+Type=Application
+Exec=rustdesk --tray
+NoDisplay=false
+        "
+            .as_bytes(),
+        )?;
+    }
+    Ok(())
 }
