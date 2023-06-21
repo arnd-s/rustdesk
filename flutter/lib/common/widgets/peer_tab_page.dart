@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:bot_toast/bot_toast.dart';
@@ -8,6 +7,7 @@ import 'package:flutter_hbb/common/widgets/address_book.dart';
 import 'package:flutter_hbb/common/widgets/my_group.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
+import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
@@ -18,7 +18,6 @@ import 'package:get/get.dart';
 import 'package:get/get_rx/src/rx_workers/utils/debouncer.dart';
 import 'package:provider/provider.dart';
 import 'package:visibility_detector/visibility_detector.dart';
-import 'package:dropdown_button2/dropdown_button2.dart';
 
 import '../../common.dart';
 import '../../models/platform_model.dart';
@@ -41,8 +40,6 @@ EdgeInsets? _menuPadding() {
 
 class _PeerTabPageState extends State<PeerTabPage>
     with SingleTickerProviderStateMixin {
-  bool _hideSort = bind.getLocalFlutterConfig(k: 'peer-tab-index') == '0';
-
   final List<_TabEntry> entries = [
     _TabEntry(
         RecentPeersView(
@@ -63,12 +60,13 @@ class _PeerTabPageState extends State<PeerTabPage>
         AddressBook(
           menuPadding: _menuPadding(),
         ),
-        () => {}),
+        () => gFFI.abModel.pullAb()),
     _TabEntry(
-        MyGroup(
-          menuPadding: _menuPadding(),
-        ),
-        () => {}),
+      MyGroup(
+        menuPadding: _menuPadding(),
+      ),
+      () => gFFI.groupModel.pull(),
+    ),
   ];
   final _scrollDebounce = Debouncer(delay: Duration(milliseconds: 50));
 
@@ -87,7 +85,6 @@ class _PeerTabPageState extends State<PeerTabPage>
     if (tabIndex < entries.length) {
       gFFI.peerTabModel.setCurrentTab(tabIndex);
       entries[tabIndex].load();
-      _hideSort = tabIndex == 0;
     }
   }
 
@@ -109,13 +106,13 @@ class _PeerTabPageState extends State<PeerTabPage>
                     child:
                         visibleContextMenuListener(_createSwitchBar(context))),
                 buildScrollJumper(),
-                const PeerSearchBar(),
+                const PeerSearchBar().marginOnly(right: 13),
+                _createRefresh(),
                 Offstage(
                     offstage: !isDesktop,
-                    child: _createPeerViewTypeSwitch(context)
-                        .marginOnly(left: 13)),
+                    child: _createPeerViewTypeSwitch(context)),
                 Offstage(
-                  offstage: _hideSort,
+                  offstage: gFFI.peerTabModel.currentTab == 0,
                   child: PeerSortDropdown().marginOnly(left: 8),
                 ),
               ],
@@ -128,6 +125,16 @@ class _PeerTabPageState extends State<PeerTabPage>
   }
 
   Widget _createSwitchBar(BuildContext context) {
+    getListener({required Key key, required Widget child, required int index}) {
+      if (isMobile) {
+        return ReorderableDelayedDragStartListener(
+            key: key, child: child, index: index);
+      } else {
+        return ReorderableDragStartListener(
+            key: key, child: child, index: index);
+      }
+    }
+
     final model = Provider.of<PeerTabModel>(context);
     int indexCounter = -1;
     return ReorderableListView(
@@ -140,7 +147,7 @@ class _PeerTabPageState extends State<PeerTabPage>
         scrollController: model.sc,
         children: model.visibleOrderedTabs.map((t) {
           indexCounter++;
-          return ReorderableDragStartListener(
+          return getListener(
             key: ValueKey(t),
             index: indexCounter,
             child: VisibilityDetector(
@@ -239,6 +246,29 @@ class _PeerTabPageState extends State<PeerTabPage>
     }
     return Expanded(
         child: child.marginSymmetric(vertical: isDesktop ? 12.0 : 6.0));
+  }
+
+  Widget _createRefresh() {
+    final textColor = Theme.of(context).textTheme.titleLarge?.color;
+    return Offstage(
+      offstage: gFFI.peerTabModel.currentTab < 3, // local tab can't see effect
+      child: Container(
+        padding: EdgeInsets.all(4.0),
+        child: AnimatedRotationWidget(
+            onPressed: () {
+              if (gFFI.peerTabModel.currentTab < entries.length) {
+                entries[gFFI.peerTabModel.currentTab].load();
+              }
+            },
+            child: RotatedBox(
+                quarterTurns: 2,
+                child: Icon(
+                  Icons.refresh,
+                  size: 18,
+                  color: textColor,
+                ))),
+      ),
+    );
   }
 
   Widget _createPeerViewTypeSwitch(BuildContext context) {
