@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "Chýba užívateľské meno"),
         ("Password missed", "Chýba heslo"),
         ("Wrong credentials", "Nesprávne prihlasovacie údaje"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "Upraviť štítok"),
         ("Unremember Password", "Zabudnúť heslo"),
         ("Favorites", "Obľúbené"),
@@ -511,5 +512,10 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Collapse toolbar", ""),
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
+        ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }

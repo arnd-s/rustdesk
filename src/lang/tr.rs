@@ -233,6 +233,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Username missed", "Kullanıcı adı boş"),
         ("Password missed", "Şifre boş"),
         ("Wrong credentials", "Yanlış kimlik bilgileri"),
+        ("The verification code is incorrect or has expired", ""),
         ("Edit Tag", "Etiketi düzenle"),
         ("Unremember Password", "Şifreyi Unut"),
         ("Favorites", "Favoriler"),
@@ -511,5 +512,10 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Collapse toolbar", ""),
         ("Accept and Elevate", ""),
         ("accept_and_elevate_btn_tooltip", ""),
+        ("clipboard_wait_response_timeout_tip", ""),
+        ("Incoming connection", ""),
+        ("Outgoing connection", ""),
+        ("Exit", ""),
+        ("Open", ""),
     ].iter().cloned().collect();
 }

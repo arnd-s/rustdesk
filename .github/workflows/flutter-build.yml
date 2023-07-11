@@ -6,6 +6,9 @@ on:
       upload-artifact:
         type: boolean
         default: true
+      upload-tag:
+        type: string
+        default: "nightly"
 
 env:
   CARGO_NDK_VERSION: "3.1.2"
@@ -15,11 +18,11 @@ env:
   # for arm64 linux
   FLUTTER_ELINUX_VERSION: "3.10.5"
   FLUTTER_ELINUX_COMMIT_ID: "410b3ca42f2cd0c485edf517a1666652bab442d4"
-  TAG_NAME: "nightly"
+  TAG_NAME: "${{ inputs.upload-tag }}"
   # vcpkg version: 2023.04.15
   # for multiarch gcc compatibility
   VCPKG_COMMIT_ID: "501db0f17ef6df184fcdbfbe0f87cde2313b6ab1"
-  VERSION: "1.2.0"
+  VERSION: "1.2.1"
   NDK_VERSION: "r25c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: '${{ secrets.ANDROID_SIGNING_KEY }}'
@@ -189,8 +192,6 @@ jobs:
           python3 res/inline-sciter.py
           # Patch sciter x86
           sed -i 's/branch = "dyn"/branch = "dyn_x86"/g' ./Cargo.toml
-          # Replace the link for the ico.
-          rm res/icon.ico && cp flutter/windows/runner/resources/app_icon.ico res/icon.ico
           cargo build --features inline --release --bins
           mkdir -p ./Release
           mv ./target/release/rustdesk.exe ./Release/rustdesk.exe
@@ -314,7 +315,7 @@ jobs:
         run: |
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid"
           pushd flutter && flutter pub get && popd
-          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
 
       - name: Restore from cache and install vcpkg
         uses: lukka/run-vcpkg@v7
@@ -426,11 +427,6 @@ jobs:
           prefix-key: rustdesk-lib-cache
           key: ${{ matrix.job.target }}-${{ matrix.job.extra-build-features }}
 
-      - name: Disable rust bridge build
-        shell: bash
-        run: |
-          sed -i build.rs.bak "s/gen_flutter_rust_bridge();/\/\//g" build.rs
-
       - name: Build rustdesk lib
         env:
           VCPKG_ROOT: /opt/rustdesk_thirdparty_lib/vcpkg
@@ -524,10 +520,6 @@ jobs:
         with:
           prefix-key: rustdesk-lib-cache
           key: ${{ matrix.job.target }}-${{ matrix.job.extra-build-features }}
-
-      - name: Disable rust bridge build
-        run: |
-          sed -i "s/gen_flutter_rust_bridge();/\/\//g" build.rs
 
       - name: Build rustdesk lib
         env:
@@ -706,7 +698,6 @@ jobs:
 
       - name: Disable rust bridge build
         run: |
-          sed -i "s/gen_flutter_rust_bridge();/\/\//g" build.rs
           # only build cdylib
           sed -i  "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
 
@@ -754,10 +745,10 @@ jobs:
             # rust
             pushd /opt
             # do not use rustup, because memory overflow in qemu
-            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.69.0-${{ matrix.job.target }}.tar.gz
+            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.70.0-${{ matrix.job.target }}.tar.gz
             tar -zxvf rust.tar.gz > /dev/null && rm rust.tar.gz
-            cd rust-1.69.0-${{ matrix.job.target }} && ./install.sh
-            rm -rf rust-1.69.0-${{ matrix.job.target }}
+            cd rust-1.70.0-${{ matrix.job.target }} && ./install.sh
+            rm -rf rust-1.70.0-${{ matrix.job.target }}
             # edit config
             mkdir -p ~/.cargo/
             echo """
@@ -877,7 +868,6 @@ jobs:
 
       - name: Disable rust bridge build
         run: |
-          sed -i "s/gen_flutter_rust_bridge();/\/\//g" build.rs
           # only build cdylib
           sed -i  "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
 
@@ -923,10 +913,10 @@ jobs:
             # rust
             pushd /opt
             # do not use rustup, because memory overflow in qemu
-            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.69.0-${{ matrix.job.target }}.tar.gz
+            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.70.0-${{ matrix.job.target }}.tar.gz
             tar -zxvf rust.tar.gz > /dev/null && rm rust.tar.gz
-            cd rust-1.69.0-${{ matrix.job.target }} && ./install.sh
-            rm -rf rust-1.69.0-${{ matrix.job.target }}
+            cd rust-1.70.0-${{ matrix.job.target }} && ./install.sh
+            rm -rf rust-1.70.0-${{ matrix.job.target }}
             # edit config
             mkdir -p ~/.cargo/
             echo """
@@ -1055,10 +1045,10 @@ jobs:
             # rust
             pushd /opt
             # do not use rustup, because memory overflow in qemu
-            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.69.0-${{ matrix.job.target }}.tar.gz
+            wget -O rust.tar.gz https://static.rust-lang.org/dist/rust-1.70.0-${{ matrix.job.target }}.tar.gz
             tar -zxvf rust.tar.gz > /dev/null && rm rust.tar.gz
-            cd rust-1.69.0-${{ matrix.job.target }} && ./install.sh
-            rm -rf rust-1.69.0-${{ matrix.job.target }}
+            cd rust-1.70.0-${{ matrix.job.target }} && ./install.sh
+            rm -rf rust-1.70.0-${{ matrix.job.target }}
             # edit config
             mkdir -p ~/.cargo/
             echo """
