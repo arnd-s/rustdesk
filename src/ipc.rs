@@ -1,10 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicBool, Ordering},
-};
-#[cfg(not(windows))]
-use std::{fs::File, io::prelude::*};
-
 use crate::{
     privacy_mode::PrivacyModeState,
     ui_interface::{get_local_option, set_local_option},
@@ -14,6 +7,12 @@ use parity_tokio_ipc::{
     Connection as Conn, ConnectionClient as ConnClient, Endpoint, Incoming, SecurityAttributes,
 };
 use serde_derive::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
+#[cfg(not(windows))]
+use std::{fs::File, io::prelude::*};
 
 #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -26,8 +25,13 @@ use hbb_common::{
     config::{self, Config, Config2},
     futures::StreamExt as _,
     futures_util::sink::SinkExt,
-    log, password_security as password, timeout, tokio,
-    tokio::io::{AsyncRead, AsyncWrite},
+    log, password_security as password,
+    sodiumoxide::base64,
+    timeout,
+    tokio::{
+        self,
+        io::{AsyncRead, AsyncWrite},
+    },
     tokio_util::codec::Framed,
     ResultType,
 };
@@ -41,6 +45,10 @@ pub static EXIT_RECV_CLOSE: AtomicBool = AtomicBool::new(true);
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "t", content = "c")]
 pub enum FS {
+    ReadEmptyDirs {
+        dir: String,
+        include_hidden: bool,
+    },
     ReadDir {
         dir: String,
         include_hidden: bool,
@@ -98,6 +106,26 @@ pub enum FS {
         last_modified: u64,
         is_upload: bool,
     },
+    Rename {
+        id: i32,
+        path: String,
+        new_name: String,
+    },
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "t")]
+pub struct ClipboardNonFile {
+    pub compress: bool,
+    pub content: bytes::Bytes,
+    pub content_len: usize,
+    pub next_raw: bool,
+    pub width: i32,
+    pub height: i32,
+    // message.proto: ClipboardFormat
+    pub format: i32,
+    pub special_name: String,
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -205,6 +233,8 @@ pub enum Data {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     ClipboardFile(ClipboardFile),
     ClipboardFileEnabled(bool),
+    #[cfg(target_os = "windows")]
+    ClipboardNonFile(Option<(String, Vec<ClipboardNonFile>)>),
     PrivacyModeState((i32, PrivacyModeState, String)),
     TestRendezvousServer,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -236,10 +266,13 @@ pub enum Data {
     ControlledSessionCount(usize),
     CmErr(String),
     CheckHwcodec,
+    #[cfg(feature = "flutter")]
     VideoConnCount(Option<usize>),
     // Although the key is not neccessary, it is used to avoid hardcoding the key.
     WaylandScreencastRestoreToken((String, String)),
     HwCodecConfig(Option<String>),
+    RemoveTrustedDevices(Vec<Bytes>),
+    ClearTrustedDevices,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -306,7 +339,7 @@ pub async fn new_listener(postfix: &str) -> ResultType<Incoming> {
     }
 }
 
-pub struct CheckIfRestart(String, Vec<String>, String);
+pub struct CheckIfRestart(String, Vec<String>, String, String);
 
 impl CheckIfRestart {
     pub fn new() -> CheckIfRestart {
@@ -314,6 +347,7 @@ impl CheckIfRestart {
             Config::get_option("stop-service"),
             Config::get_rendezvous_servers(),
             Config::get_option("audio-input"),
+            Config::get_option("voice-call-input"),
         )
     }
 }
@@ -326,6 +360,12 @@ impl Drop for CheckIfRestart {
         }
         if self.2 != Config::get_option("audio-input") {
             crate::audio_service::restart();
+        }
+        if self.3 != Config::get_option("voice-call-input") {
+            crate::audio_service::set_voice_call_input_device(
+                Some(Config::get_option("voice-call-input")),
+                true,
+            )
         }
     }
 }
@@ -358,7 +398,34 @@ async fn handle(data: Data, stream: &mut Connection) {
                 if is_server() {
                     let _ = privacy_mode::turn_off_privacy(0, Some(PrivacyModeState::OffByPeer));
                 }
-                std::process::exit(0);
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                if crate::is_main() {
+                    // below part is for main windows can be reopen during rustdesk installation and installing service from UI
+                    // this make new ipc server (domain socket) can be created.
+                    std::fs::remove_file(&Config::ipc_path("")).ok();
+                    #[cfg(target_os = "linux")]
+                    {
+                        hbb_common::sleep((crate::platform::SERVICE_INTERVAL * 2) as f32 / 1000.0)
+                            .await;
+                        // https://github.com/rustdesk/rustdesk/discussions/9254
+                        crate::run_me::<&str>(vec!["--no-server"]).ok();
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        // our launchagent interval is 1 second
+                        hbb_common::sleep(1.5).await;
+                        std::process::Command::new("open")
+                            .arg("-n")
+                            .arg(&format!("/Applications/{}.app", crate::get_app_name()))
+                            .spawn()
+                            .ok();
+                    }
+                    // leave above open a little time
+                    hbb_common::sleep(0.3).await;
+                    // in case below exit failed
+                    crate::platform::quit_gui();
+                }
+                std::process::exit(-1); // to make sure --server luauchagent process can restart because SuccessfulExit used
             }
         }
         Data::OnlineStatus(_) => {
@@ -389,6 +456,7 @@ async fn handle(data: Data, stream: &mut Connection) {
                 log::info!("socks updated");
             }
         },
+        #[cfg(feature = "flutter")]
         Data::VideoConnCount(None) => {
             let n = crate::server::AUTHED_CONNS
                 .lock()
@@ -429,6 +497,12 @@ async fn handle(data: Data, stream: &mut Connection) {
                     } else {
                         None
                     };
+                } else if name == "voice-call-input" {
+                    value = crate::audio_service::get_voice_call_input_device();
+                } else if name == "unlock-pin" {
+                    value = Some(Config::get_unlock_pin());
+                } else if name == "trusted-devices" {
+                    value = Some(Config::get_trusted_devices_json());
                 } else {
                     value = None;
                 }
@@ -444,6 +518,10 @@ async fn handle(data: Data, stream: &mut Connection) {
                     Config::set_permanent_password(&value);
                 } else if name == "salt" {
                     Config::set_salt(&value);
+                } else if name == "voice-call-input" {
+                    crate::audio_service::set_voice_call_input_device(Some(value), true);
+                } else if name == "unlock-pin" {
+                    Config::set_unlock_pin(&value);
                 } else {
                     return;
                 }
@@ -460,12 +538,7 @@ async fn handle(data: Data, stream: &mut Connection) {
                 if let Some(v) = value.get("privacy-mode-impl-key") {
                     crate::privacy_mode::switch(v);
                 }
-                let pre_opts = Config::get_options();
-                let new_audio_input = pre_opts.get("audio-input");
                 Config::set_options(value);
-                if new_audio_input != pre_opts.get("audio-input") {
-                    crate::audio_service::restart();
-                }
                 allow_err!(stream.send(&Data::Options(None)).await);
             }
         },
@@ -525,12 +598,12 @@ async fn handle(data: Data, stream: &mut Connection) {
             );
         }
         #[cfg(feature = "hwcodec")]
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         Data::CheckHwcodec => {
             scrap::hwcodec::start_check_process();
         }
         #[cfg(feature = "hwcodec")]
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         Data::HwCodecConfig(c) => {
             match c {
                 None => {
@@ -581,6 +654,12 @@ async fn handle(data: Data, stream: &mut Connection) {
                         .await
                 );
             }
+        }
+        Data::RemoveTrustedDevices(v) => {
+            Config::remove_trusted_devices(&v);
+        }
+        Data::ClearTrustedDevices => {
+            Config::clear_trusted_devices();
         }
         _ => {}
     }
@@ -699,6 +778,9 @@ async fn check_pid(postfix: &str) {
             }
         }
     }
+    // if not remove old ipc file, the new ipc creation will fail
+    // if we remove a ipc file, but the old ipc process is still running,
+    // new connection to the ipc will connect to new ipc, old connection to old ipc still keep alive
     std::fs::remove_file(&Config::ipc_path(postfix)).ok();
 }
 
@@ -808,6 +890,17 @@ pub async fn set_config_async(name: &str, value: String) -> ResultType<()> {
 }
 
 #[tokio::main(flavor = "current_thread")]
+pub async fn set_data(data: &Data) -> ResultType<()> {
+    set_data_async(data).await
+}
+
+async fn set_data_async(data: &Data) -> ResultType<()> {
+    let mut c = connect(1000, "").await?;
+    c.send(data).await?;
+    Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
 pub async fn set_config(name: &str, value: String) -> ResultType<()> {
     set_config_async(name, value).await
 }
@@ -834,6 +927,68 @@ pub fn get_fingerprint() -> String {
 pub fn set_permanent_password(v: String) -> ResultType<()> {
     Config::set_permanent_password(&v);
     set_config("permanent-password", v)
+}
+
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn set_unlock_pin(v: String, translate: bool) -> ResultType<()> {
+    let v = v.trim().to_owned();
+    let min_len = 4;
+    let max_len = crate::ui_interface::max_encrypt_len();
+    let len = v.chars().count();
+    if !v.is_empty() {
+        if len < min_len {
+            let err = if translate {
+                crate::lang::translate(
+                    "Requires at least {".to_string() + &format!("{min_len}") + "} characters",
+                )
+            } else {
+                // Sometimes, translated can't show normally in command line
+                format!("Requires at least {} characters", min_len)
+            };
+            bail!(err);
+        }
+        if len > max_len {
+            bail!("No more than {max_len} characters");
+        }
+    }
+    Config::set_unlock_pin(&v);
+    set_config("unlock-pin", v)
+}
+
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn get_unlock_pin() -> String {
+    if let Ok(Some(v)) = get_config("unlock-pin") {
+        Config::set_unlock_pin(&v);
+        v
+    } else {
+        Config::get_unlock_pin()
+    }
+}
+
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn get_trusted_devices() -> String {
+    if let Ok(Some(v)) = get_config("trusted-devices") {
+        v
+    } else {
+        Config::get_trusted_devices_json()
+    }
+}
+
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn remove_trusted_devices(hwids: Vec<Bytes>) {
+    Config::remove_trusted_devices(&hwids);
+    allow_err!(set_data(&Data::RemoveTrustedDevices(hwids)));
+}
+
+#[cfg(feature = "flutter")]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn clear_trusted_devices() {
+    Config::clear_trusted_devices();
+    allow_err!(set_data(&Data::ClearTrustedDevices));
 }
 
 pub fn get_id() -> String {
@@ -985,31 +1140,6 @@ pub async fn test_rendezvous_server() -> ResultType<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-pub fn is_ipc_file_exist(suffix: &str) -> ResultType<bool> {
-    // Not change this to std::path::Path::exists, unless it can be ensured that it can find the ipc which occupied by a process that taskkill can't kill.
-    let prefix = "\\\\.\\pipe\\";
-    let file_name = Config::ipc_path(suffix).replace(prefix, "");
-    let mut err = None;
-    for entry in std::fs::read_dir(prefix)? {
-        match entry {
-            Ok(entry) => {
-                if entry.file_name().into_string().unwrap_or_default() == file_name {
-                    return Ok(true);
-                }
-            }
-            Err(e) => {
-                err = Some(e);
-            }
-        }
-    }
-    if let Some(e) = err {
-        Err(e.into())
-    } else {
-        Ok(false)
-    }
-}
-
 #[tokio::main(flavor = "current_thread")]
 pub async fn send_url_scheme(url: String) -> ResultType<()> {
     connect(1_000, "_url")
@@ -1041,7 +1171,7 @@ pub async fn notify_server_to_check_hwcodec() -> ResultType<()> {
 }
 
 #[cfg(feature = "hwcodec")]
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tokio::main(flavor = "current_thread")]
 pub async fn get_hwcodec_config_from_server() -> ResultType<()> {
     if !scrap::codec::enable_hwcodec_option() || scrap::hwcodec::HwCodecConfig::already_set() {
@@ -1064,7 +1194,7 @@ pub async fn get_hwcodec_config_from_server() -> ResultType<()> {
 }
 
 #[cfg(feature = "hwcodec")]
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn client_get_hwcodec_config_thread(wait_sec: u64) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     if !crate::platform::is_installed()

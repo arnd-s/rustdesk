@@ -103,6 +103,9 @@ class MainService : Service() {
                     put("scale",SCREEN_INFO.scale)
                 }.toString()
             }
+            "is_start" -> {
+                isStart.toString()
+            }
             else -> ""
         }
     }
@@ -172,10 +175,10 @@ class MainService : Service() {
                 Log.d(logTag, "from rust:stop_capture")
                 stopCapture()
             }
-            "is_hardware_codec" -> {
-                val isHwCodec = arg1.toBoolean()
-                if (isHardwareCodec != isHwCodec) {
-                    isHardwareCodec = isHwCodec
+            "half_scale" -> {
+                val halfScale = arg1.toBoolean()
+                if (isHalfScale != halfScale) {
+                    isHalfScale = halfScale
                     updateScreenInfo(resources.configuration.orientation)
                 }
                 
@@ -251,7 +254,7 @@ class MainService : Service() {
         super.onDestroy()
     }
 
-    private var isHardwareCodec: Boolean? = null;
+    private var isHalfScale: Boolean? = null;
     private fun updateScreenInfo(orientation: Int) {
         var w: Int
         var h: Int
@@ -284,7 +287,7 @@ class MainService : Service() {
         Log.d(logTag,"updateScreenInfo:w:$w,h:$h")
         var scale = 1
         if (w != 0 && h != 0) {
-            if (isHardwareCodec == false && (w > MAX_SCREEN_SIZE || h > MAX_SCREEN_SIZE)) {
+            if (isHalfScale == true && (w > MAX_SCREEN_SIZE || h > MAX_SCREEN_SIZE)) {
                 scale = 2
                 w /= scale
                 h /= scale
@@ -299,6 +302,8 @@ class MainService : Service() {
                     stopCapture()
                     FFI.refreshScreen()
                     startCapture()
+                } else {
+                    FFI.refreshScreen()
                 }
             }
 
@@ -428,6 +433,7 @@ class MainService : Service() {
         checkMediaPermission()
         _isStart = true
         FFI.setFrameRawEnable("video",true)
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         return true
     }
 
@@ -436,6 +442,7 @@ class MainService : Service() {
         Log.d(logTag, "Stop Capture")
         FFI.setFrameRawEnable("video",false)
         _isStart = false
+        MainActivity.rdClipboardManager?.setCaptureStarted(_isStart)
         // release video
         if (reuseVirtualDisplay) {
             // The virtual display video projection can be paused by calling `setSurface(null)`.

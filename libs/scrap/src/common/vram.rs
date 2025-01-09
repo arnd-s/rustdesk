@@ -64,7 +64,7 @@ impl EncoderApi for VRamEncoder {
                 let b = Self::convert_quality(config.quality, &config.feature);
                 let base_bitrate = base_bitrate(config.width as _, config.height as _);
                 let mut bitrate = base_bitrate * b / 100;
-                if base_bitrate <= 0 {
+                if bitrate <= 0 {
                     bitrate = base_bitrate;
                 }
                 let gop = config.keyframe_interval.unwrap_or(MAX_GOP as _) as i32;
@@ -99,15 +99,23 @@ impl EncoderApi for VRamEncoder {
     fn encode_to_message(
         &mut self,
         frame: EncodeInput,
-        _ms: i64,
+        ms: i64,
     ) -> ResultType<hbb_common::message_proto::VideoFrame> {
-        let texture = frame.texture()?;
+        let (texture, rotation) = frame.texture()?;
+        if rotation != 0 {
+            // to-do: support rotation
+            // Both the encoder and display(w,h) information need to be changed.
+            bail!("rotation not supported");
+        }
         let mut vf = VideoFrame::new();
         let mut frames = Vec::new();
-        for frame in self.encode(texture).with_context(|| "Failed to encode")? {
+        for frame in self
+            .encode(texture, ms)
+            .with_context(|| "Failed to encode")?
+        {
             frames.push(EncodedVideoFrame {
                 data: Bytes::from(frame.data),
-                pts: frame.pts as _,
+                pts: frame.pts,
                 key: frame.key == 1,
                 ..Default::default()
             });
@@ -266,8 +274,8 @@ impl VRamEncoder {
         }
     }
 
-    pub fn encode(&mut self, texture: *mut c_void) -> ResultType<Vec<EncodeFrame>> {
-        match self.encoder.encode(texture) {
+    pub fn encode(&mut self, texture: *mut c_void, ms: i64) -> ResultType<Vec<EncodeFrame>> {
+        match self.encoder.encode(texture, ms) {
             Ok(v) => {
                 let mut data = Vec::<EncodeFrame>::new();
                 data.append(v);
@@ -351,7 +359,7 @@ impl VRamDecoder {
     }
 
     pub fn possible_available_without_check() -> (bool, bool) {
-        if !enable_vram_option() {
+        if !enable_vram_option(false) {
             return (false, false);
         }
         let v = crate::hwcodec::HwCodecConfig::get().vram_decode;
